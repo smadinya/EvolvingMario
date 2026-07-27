@@ -38,15 +38,17 @@ def test_mutation_constraints():
     assert all(g[15][x] == "X" for x in range(ga.width - 4, ga.width)), "goal columns lost their floor"
 
 
-def test_favorite_level_is_solvable():
-    """Run after picking a favorite: the submitted level must actually be beatable."""
-    try:
-        with open("levels/last.txt") as f:
-            level = [list(line.rstrip("\n")) for line in f]
-    except FileNotFoundError:
-        print("  skipped (no levels/last.txt yet -- run ga.py first)")
-        return
-    assert metrics.metrics(level)["solvability"] == 1.0, "levels/last.txt is not solvable"
+def test_submitted_level_is_solvable():
+    """The level we actually hand in must be the right shape and beatable.
+
+    Checks the committed submission rather than levels/last.txt, which is gitignored
+    and would make this check silently skip on a fresh clone.
+    """
+    with open("../alcocer_madinya.txt") as f:
+        level = [list(line.rstrip("\n")) for line in f]
+    assert len(level) == ga.height, len(level)
+    assert all(len(row) == ga.width for row in level)
+    assert metrics.metrics(level)["solvability"] == 1.0, "submitted level is not solvable"
 
 
 def test_de_empty_genome_does_not_raise():

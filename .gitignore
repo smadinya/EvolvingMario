@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# P5 generated levels (keep the dir, drop the output)
+src/levels/*.txt

@@ -26,6 +26,19 @@ options = [
     #"m"  # mario's start position, do not generate
 ]
 
+# STUDENT Tuning knobs, kept together so parameter experiments are one-line edits.
+ELITE_FRAC = 0.05        # top 5% of a generation survives untouched
+TOURNAMENT_K = 5         # ponytail: the explore/exploit knob; k=2 explores, k=10 exploits
+MUTATION_RATE = 0.005    # per interior tile; swept 0.005/0.01/0.02/0.05 -- best-of stays
+                         # flat (elitism protects it) but population average falls off a
+                         # cliff above this (27.4 -> 24.5 -> 22.5 -> 16.0 at gen 10)
+FLOOR_GAP_RATE = 0.002   # per floor column, chance to start carving a gap
+GAP_MAX_W = 5            # metrics' jump arcs reach dx=8, so <=5 stays clearable
+JUMP_TARGET = 30         # stop paying for meaningfulJumps here, so its term (9.0) stays
+                         # under the solvability term (10.0) and the floor survives
+# Aligned with `options` above:  -   X  ?  M  B  o  |  T  E
+TILE_WEIGHTS = [70, 6, 3, 1, 4, 8, 0, 3, 5]  # "|" is 0: pipe bodies only get placed under a "T"
+
 # The level as a grid of tiles
 
 
@@ -40,17 +53,26 @@ class Individual_Grid(object):
     # This can be expensive so we do it once and then cache the result.
     def calculate_fitness(self):
         measurements = metrics.metrics(self.to_level())
-        # Print out the possible measurements or look at the implementation of metrics.py for other keys:
-        # print(measurements.keys())
+        # meaningfulJumps is an unbounded count, so a plain linear reward lets the GA push
+        # it past every bounded term: left uncapped it reached 86 and hollowed out 135 of
+        # 192 floor columns.  Pay for jumps only up to a target, then stop.
+        measurements["meaningfulJumps"] = min(measurements["meaningfulJumps"], JUMP_TARGET)
         # Default fitness function: Just some arbitrary combination of a few criteria.  Is it good?  Who knows?
         # STUDENT Modify this, and possibly add more metrics.  You can replace this with whatever code you like.
+        # Design goal: jumpy and gap-heavy, but always solvable.
         coefficients = dict(
+            solvability=10.0,           # dominant; unsolvable also returns -1 for every jump metric
+            meaningfulJumps=0.3,        # jumps that clear an actual gap -- the design goal
+            jumps=0.05,                 # mild credit for jumping at all
             meaningfulJumpVariance=0.5,
             negativeSpace=0.6,
             pathPercentage=0.5,
             emptyPercentage=0.6,
-            linearity=-0.5,
-            solvability=2.0
+            # No leniency term: it is unbounded (-135 on an evolved level) and its
+            # -0.5*rewards half swamps its +len(gaps) half, so any negative weight just
+            # pays the GA to carpet the level in coins.  Measured: with leniency=-0.1 a
+            # uniform-random population scored *higher* than an evolved one.
+            linearity=-0.5
         )
         self._fitness = sum(map(lambda m: coefficients[m] * measurements[m],
                                 coefficients))
@@ -64,31 +86,38 @@ class Individual_Grid(object):
 
     # Mutate a genome into a new genome.  Note that this is a _genome_, not an individual!
     def mutate(self, genome):
-        # STUDENT implement a mutation operator, also consider not mutating this individual
-        # STUDENT also consider weighting the different tile types so it's not uniformly random
-        # STUDENT consider putting more constraints on this to prevent pipes in the air, etc
-
         left = 1
         right = width - 1
-        for y in range(height):
+        # Rows 0-14 only; the floor (row 15) is mutated separately below.
+        for y in range(height - 1):
             for x in range(left, right):
-                pass
+                if random.random() < MUTATION_RATE:
+                    tile = random.choices(options, weights=TILE_WEIGHTS)[0]
+                    genome[y][x] = tile
+                    if tile == "T":
+                        # No pipes in the air: fill the body down to the floor.
+                        for y2 in range(y + 1, height - 1):
+                            genome[y2][x] = "|"
+        # Floor gaps are the only source of meaningfulJumps in this encoding, so they get
+        # their own operator.  Columns 0-3 stay solid because metrics starts pathfinding at
+        # x=2 and needs ground under it; the last 4 stay solid because the goal test is x=198.
+        for x in range(4, width - 4):
+            if random.random() < FLOOR_GAP_RATE:
+                for x2 in range(x, min(x + random.randint(1, GAP_MAX_W), width - 4)):
+                    genome[15][x2] = "-"
         return genome
 
     # Create zero or more children from self and other
     def generate_children(self, other):
-        new_genome = copy.deepcopy(self.genome)
-        # Leaving first and last columns alone...
-        # do crossover with other
-        left = 1
-        right = width - 1
-        for y in range(height):
-            for x in range(left, right):
-                # STUDENT Which one should you take?  Self, or other?  Why?
-                # STUDENT consider putting more constraints on this to prevent pipes in the air, etc
-                pass
-        # do mutation; note we're returning a one-element tuple here
-        return (Individual_Grid(new_genome),)
+        # Single-point crossover by column.  Column-wise rather than tile-wise so vertical
+        # structures (a pipe's T over its |, a stair's supports) survive the cut intact.
+        # x_cut in [1, width-1] leaves column 0 (Mario) and column width-1 (goal) alone.
+        x_cut = random.randint(1, width - 1)
+        genome_a = [a[:x_cut] + b[x_cut:] for a, b in zip(self.genome, other.genome)]
+        # The complement child: everything the first child left behind, for free diversity.
+        genome_b = [b[:x_cut] + a[x_cut:] for a, b in zip(self.genome, other.genome)]
+        return (Individual_Grid(self.mutate(genome_a)),
+                Individual_Grid(self.mutate(genome_b)))
 
     # Turn the genome into a level string (easy for this genome)
     def to_level(self):
@@ -110,14 +139,29 @@ class Individual_Grid(object):
 
     @classmethod
     def random_individual(cls):
-        # STUDENT consider putting more constraints on this to prevent pipes in the air, etc
-        # STUDENT also consider weighting the different tile types so it's not uniformly random
-        g = [random.choices(options, k=width) for row in range(height)]
+        # Weighted, not uniform: measured 0/20 uniform-random individuals are solvable
+        # versus 20/20 at these weights, so uniform init gives the search no gradient.
+        g = [random.choices(options, weights=TILE_WEIGHTS, k=width) for row in range(height)]
         g[15][:] = ["X"] * width
+        # The spec fixes the leftmost and rightmost columns; keep them exactly as
+        # empty_individual builds them instead of leaving random tiles there.
+        for row in range(14):
+            g[row][0] = "-"
+        for row in range(7):
+            g[row][-1] = "-"
         g[14][0] = "m"
         g[7][-1] = "v"
-        g[8:14][-1] = ["f"] * 6
-        g[14:16][-1] = ["X", "X"]
+        # These two were `g[8:14][-1] = ...` / `g[14:16][-1] = ...`, which assign into a
+        # throwaway slice copy -- random individuals were getting no goal column at all.
+        for row in range(8, 14):
+            g[row][-1] = "f"
+        for row in range(14, 16):
+            g[row][-1] = "X"
+        # Seed floor gaps so generation 0 already has something to jump over.
+        for _ in range(random.randint(3, 12)):
+            x = random.randint(4, width - 9)
+            for x2 in range(x, x + random.randint(1, GAP_MAX_W)):
+                g[15][x2] = "-"
         return cls(g)
 
 
@@ -340,14 +384,26 @@ class Individual_DE(object):
         return Individual_DE(g)
 
 
-Individual = Individual_Grid
+# Encoding switch by env var so both encodings can be run without editing this line:
+#   python3.12 ga.py        -> grid
+#   DE=1 python3.12 ga.py   -> design elements
+Individual = Individual_DE if os.environ.get("DE") else Individual_Grid
 
 
 def generate_successors(population):
-    results = []
-    # STUDENT Design and implement this
-    # Hint: Call generate_children() on some individuals and fill up results.
-    return results
+    n = len(population)
+    # Strategy 1, elitism: the best few carry over unchanged, so a good level is never
+    # lost to an unlucky crossover.
+    results = heapq.nlargest(max(1, int(n * ELITE_FRAC)), population, key=Individual.fitness)
+    # Strategy 2, tournament: sample TOURNAMENT_K at random, the fittest becomes a parent.
+    # k is the selection pressure -- small k lets weak-but-different genomes breed.
+    def pick():
+        return max(random.sample(population, TOURNAMENT_K), key=Individual.fitness)
+    # Grid returns 2 children and DE returns 2, but neither is contractually fixed, so
+    # extend-then-truncate rather than assuming a child count.
+    while len(results) < n:
+        results.extend(pick().generate_children(pick()))
+    return results[:n]
 
 
 def ga():

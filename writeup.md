@@ -178,10 +178,55 @@ We considered seeding real level chunks from `level.txt` and decided against it:
 weighted initialization was already supplying enough biodiversity to make the search work.
 
 ## 3. DE encoding: crossover and mutation explained *(Alcocer)*
+Crossover:
+Each individual's genome is just a list of design elements (like holes, platforms, pipes, etc.), but for every individual, the list can be a different length (ex: one level can have 10 elements and another can have like 70).
+In generate_children, it basically just picks a random cut point in each parent separately: pa for one parent, pb for the other parent's. Child A is the elements before pa + the elements after pb. So, Child B is the leftover pieces (swapped the other way).
+Since the cut points are independent and the lists aren't a fixed size, that means that the children will usually end up with a different number of elements than either parent. That's the main source of diversity, it's not just mixing tile values like the grid encoding, it's mixing like whole chunks of structure and changing how much structure there is.
+One bug fixed was: empty_individual(), it returns an empty genome([]), and the original code crashed on it, because random.randint(0, len(self.genome) -1) becomes random.randint(0, -1). Made pa/pb default to 0 when the genome is empty, so crossing anempty individual with anything else just takes the whole non-empty side instead.
+
+Mutation:
+10% of the time, we grab one random element and tweak one of its number (position, width, height, etc.) using offset_by_upto function. That function simply adds a small random offset and clips it to stay in range, so small changes are common and big jumps are rare. boolean properties (like whether a block is breakable), it just flips the value instead. The original version only ever changes one element's parameters.
 
 <!-- variable-point crossover walkthrough + diagram, offset_by_upto, the heap -->
 
 ## 4. DE encoding: fitness redesign and mutation additions *(Alcocer)*
+Fitness
+
+The starting fitness had like no jump term at all, and solvability was only weighted 2.0 which was much weaker than Grid's 10.0. I matched Grid's weights: solvability=10.0, meaningfulJumps=0.3.
+I also added a DE only penalty: holes can overlap here, so I sum total hole width from the genome and penalize past 35% of teh level width.
+Bloat: When I added the insert/delete mutaation (which is below), average genome lengtj grew from 27 to 278 over 18 generation with no sign of stopping, and generation got around 37% slower for no real fitness gain. This is a known problem with variable length genomes, bigger genomes score slightly better, so selection keeps favoring them with no ceiling. Also, I added a small fitness cost per element:
+Penalty weight    Avg length at gen 15    If it's still growing      Fitness at gen 15
+      0                    263.3                   yea                        34.60
+   0.01                    183.5                yea, still speeding up        32.04
+   0.03                    88.9.3                 nope, flattened out         29.97
+
+0.03 was the first weight that actually stopped growth instead of just slowing it, for about a 13% fitness cost. After I also changed which element types get picked more often, 0.03 stopped being enough, bigger genomes were earning more fitness now, so the same flat penalty mattered less. Then, I bumped it to 0.05, which restored the flattening for about a 9% cost.
+
+Mutation additions
+
+The original mutation only tweaks one existing element, it can;t add or remove elements, so crossover was the onyl way genome size changed. I added insert and delete, both at a 5% chance per mutation call. This is also what caused the bloat above, since even a "balanced" insert/delete rate gets pulled off balance by selection favoring bigger genomes.
+
+Initialization (made two changes)
+
+1. which element types get picked. Originally uniform across all 8 types, so a random individual could get a dozen overlapping holes before ever being cored, immediately eating the hole penalty. I weighted the draw so holes and stairs (both penalized past a threshold) are rarer, and lowered the starting element count from 8-128 down to 8-60. These are the results of the same generations compared:
+
+Gen      Before      After
+1         19.50      20.03
+5         23.50      24.00
+10        27.61      28.89
+
+2. How many individuals start empty. empty_individual() for DE is just an empty genome, which renders as the same flat, boring level Grid's empty individual is. For Grid that's a useful like a safety net. For DE it scores only around 10-11 once random_individual is reliably scoring 18-20+ by generation 1, so most of the 10% empty slots were dead weight. So I lowered DE's share to 3%:
+
+Gen      10% empty      3% empty
+1         18.69      18.41
+5         24.43      24.79
+10        28.61      29.09
+
+This was a small but consistent improvement by generation 10
+
+Stopping condition
+
+ga() originally never stopped on its own, so Ctrl C was the only option to stop it. I added a 50 generation cap and an early stop if fitness doesn't improve for 15 generations. I tested it on a full run and it never stopped early. Fitness kept improving in small bursts even at generation 50 (35.58-> 38.01 over the last 20 generations), so it correctly ran the full cap instead of cutting off a search that was still working. Total time: ~171 seconda
 
 <!-- DE-count targets and why, insert/delete mutation, constraints -->
 
@@ -216,5 +261,10 @@ representation tradeoff the assignment is about: the grid encoding surprises us,
 encoding composes.
 
 ## 6. Favorite level #2 — DE *(Alcocer)*
+It's in alcocer_madinya.txt
+NUmbers. 50 generation, ~155 secs, population 480. Fitness reached 36.56 and the run stopped because it hit the generation cap, not because it plateaued, it was still slowly improving at the end , so a longer run would probably do better.
+Why we like it. The floor mixes solid ground with gaps of different sizes, so it's intersting and fun instead of flat or hold filled. The pipes are placed correctly, and there's real staircase instead of random blocks. Enemies and blocks are spread out instead of clumped together. Compared to the grid level, this one looks less cluttered, since each DE element is a whole object (a pipe, a platform) instead of one of 3200 separate tiles
+what was fixed. By the last generation, the top individuals were mostly near duplicates of each other so more mutation or a longer run helped with that.
+Grid vs. DE. The grid encoding can surprise you good or bad. The DE encoding builds from real level pieces, so it looks more like an actual MArio level, but tis also more limited in what it can priduce. We picked our favorite by looking at the levels.
 
 <!-- why we like it, generations, wall-clock seconds -->

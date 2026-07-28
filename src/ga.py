@@ -39,6 +39,18 @@ JUMP_TARGET = 30         # stop paying for meaningfulJumps here, so its term (9.
 # Aligned with `options` above:  -   X  ?  M  B  o  |  T  E
 TILE_WEIGHTS = [70, 6, 3, 1, 4, 8, 0, 3, 5]  # "|" is 0: pipe bodies only get placed under a "T"
 
+#DE part:
+MAX_HOLE_COVERAGE = width * 0.35 # holes may overlap -> cap total claimed width at 35% of the level
+DE_INSERT_RATE = 0.05 #chance to add a brand new random element
+DE_DELETE_RATE = 0.05 #chance to remove a random element
+PARSIMONY_WEIGHT = 0.05
+#Aligned with the order below: hole, platform, enemy, coin, block, qblock, stairs, pipe
+DE_TYPE_WEIGHTS = [6, 20, 15, 15, 15, 10, 6, 8]
+STOP_MAX_GENERATIONS = 50 #hard cap so when it run it always terminates
+STOP_PATIENCE = 15 #this just stops early if the max fitness hasn't improved in this many generations
+STOP_MIN_DELTA = 0.01 #a fitness change
+
+
 # The level as a grid of tiles
 
 
@@ -183,6 +195,20 @@ def clip(lo, val, hi):
 
 # Inspired by https://www.researchgate.net/profile/Philippe_Pasquier/publication/220867545_Towards_a_Generic_Framework_for_Automated_Video_Game_Level_Creation/links/0912f510ac2bed57d1000000.pdf
 
+def random_design_element():
+        element_generators = [
+            lambda: (random.randint(1, width - 2), "0_hole", random.randint(1, 8)),
+            lambda: (random.randint(1, width - 2), "1_platform", random.randint(1, 8), random.randint(0, height - 1), random.choice(["?", "X", "B"])),
+            lambda: (random.randint(1, width - 2), "2_enemy"),
+            lambda: (random.randint(1, width - 2), "3_coin", random.randint(0, height - 1)),
+            lambda: (random.randint(1, width - 2), "4_block", random.randint(0, height - 1), random.choice([True, False])),
+            lambda: (random.randint(1, width - 2), "5_qblock", random.randint(0, height - 1), random.choice([True, False])),
+            lambda: (random.randint(1, width - 2), "6_stairs", random.randint(1, height - 4), random.choice([-1, 1])),
+            lambda: (random.randint(1, width - 2), "7_pipe", random.randint(2, height - 4))
+        ]
+        return random.choices(element_generators, weights=DE_TYPE_WEIGHTS)[0]()
+
+
 
 class Individual_DE(object):
     # Calculating the level isn't cheap either so we cache it too.
@@ -201,18 +227,31 @@ class Individual_DE(object):
         # Default fitness function: Just some arbitrary combination of a few criteria.  Is it good?  Who knows?
         # STUDENT Add more metrics?
         # STUDENT Improve this with any code you like
+        measurements["meaningfulJumps"] = min(measurements["meaningfulJumps"], JUMP_TARGET)
+
         coefficients = dict(
+            solvability=10.0,
+            meaningfulJumps=0.3,
+            jumps=0.5,
             meaningfulJumpVariance=0.5,
             negativeSpace=0.6,
             pathPercentage=0.5,
             emptyPercentage=0.6,
             linearity=-0.5,
-            solvability=2.0
+            
         )
         penalties = 0
         # STUDENT For example, too many stairs are unaesthetic.  Let's penalize that
         if len(list(filter(lambda de: de[1] == "6_stairs", self.genome))) > 5:
             penalties -= 2
+
+        #added this and changed some fitness
+        hole_coverage = sum(de[2] for de in self.genome if de[1] == "0_hole")
+        if hole_coverage > MAX_HOLE_COVERAGE:
+            penalties -= 0.1 * (hole_coverage - MAX_HOLE_COVERAGE)
+        #bloat control -->average genome length climbed 27->278 over 18 generations
+        penalties -= PARSIMONY_WEIGHT * len(self.genome)
+
         # STUDENT If you go for the FI-2POP extra credit, you can put constraint calculation in here too and cache it in a new entry in __slots__.
         self._fitness = sum(map(lambda m: coefficients[m] * measurements[m],
                                 coefficients)) + penalties
@@ -301,12 +340,20 @@ class Individual_DE(object):
                 pass
             new_genome.pop(to_change)
             heapq.heappush(new_genome, new_de)
+
+        if random.random() < DE_INSERT_RATE:
+            heapq.heappush(new_genome, random_design_element())
+        if random.random() < DE_DELETE_RATE and len(new_genome) > 0:
+            to_remove = random.randint(0, len(new_genome) - 1)
+            new_genome.pop(to_remove)
+            heapq.heapify(new_genome) 
+
         return new_genome
 
     def generate_children(self, other):
         # STUDENT How does this work?  Explain it in your writeup.
-        pa = random.randint(0, len(self.genome) - 1)
-        pb = random.randint(0, len(other.genome) - 1)
+        pa = random.randint(0, len(self.genome) - 1) if len(self.genome) > 0 else 0
+        pb = random.randint(0, len(other.genome) - 1) if len(other.genome) > 0 else 0
         a_part = self.genome[:pa] if len(self.genome) > 0 else []
         b_part = other.genome[pb:] if len(other.genome) > 0 else []
         ga = a_part + b_part
@@ -367,20 +414,15 @@ class Individual_DE(object):
         g = []
         return Individual_DE(g)
 
+
+    
+
     @classmethod
     def random_individual(_cls):
         # STUDENT Maybe enhance this
-        elt_count = random.randint(8, 128)
-        g = [random.choice([
-            (random.randint(1, width - 2), "0_hole", random.randint(1, 8)),
-            (random.randint(1, width - 2), "1_platform", random.randint(1, 8), random.randint(0, height - 1), random.choice(["?", "X", "B"])),
-            (random.randint(1, width - 2), "2_enemy"),
-            (random.randint(1, width - 2), "3_coin", random.randint(0, height - 1)),
-            (random.randint(1, width - 2), "4_block", random.randint(0, height - 1), random.choice([True, False])),
-            (random.randint(1, width - 2), "5_qblock", random.randint(0, height - 1), random.choice([True, False])),
-            (random.randint(1, width - 2), "6_stairs", random.randint(1, height - 4), random.choice([-1, 1])),
-            (random.randint(1, width - 2), "7_pipe", random.randint(2, height - 4))
-        ]) for i in range(elt_count)]
+        #lowered from 8-128
+        elt_count = random.randint(8, 60)
+        g = [random_design_element() for i in range(elt_count)]
         return Individual_DE(g)
 
 
@@ -388,6 +430,12 @@ class Individual_DE(object):
 #   python3.12 ga.py        -> grid
 #   DE=1 python3.12 ga.py   -> design elements
 Individual = Individual_DE if os.environ.get("DE") else Individual_Grid
+
+#empty individuals are a safety net against a broken random init. Grid's random_individual
+#needed real weighting to avoid producing unsolvable levels, so a guaranteed valid empty
+#fallback earns its 10% share there. DE's Weighted random_individual already reliably scores
+#well above the empty baseline by generation 1, so the same 10% is monstly wasted slots for DE
+EMPTY_FRAC = 0.1 if Individual is Individual_Grid else 0.03
 
 
 def generate_successors(population):
@@ -417,9 +465,7 @@ def ga():
     with mpool.Pool(processes=os.cpu_count()) as pool:
         init_time = time.time()
         # STUDENT (Optional) change population initialization
-        population = [Individual.random_individual() if random.random() < 0.9
-                      else Individual.empty_individual()
-                      for _g in range(pop_limit)]
+        population = [Individual.empty_individual() if random.random() < EMPTY_FRAC else Individual.random_individual() for _g in range(pop_limit)]
         # But leave this line alone; we have to reassign to population because we get a new population that has more cached stuff in it.
         population = pool.map(Individual.calculate_fitness,
                               population,
@@ -429,6 +475,9 @@ def ga():
         generation = 0
         start = time.time()
         now = start
+        #changed this
+        best_fitness_seen = float("-inf") #--> tracks the best max fitness across all generation
+        generations_since_improvement = 0 # resets whenever it beats best_fitness_seen
         print("Use ctrl-c to terminate this loop manually.")
         try:
             while True:
@@ -443,10 +492,21 @@ def ga():
                     with open("levels/last.txt", 'w') as f:
                         for row in best.to_level():
                             f.write("".join(row) + "\n")
+
+                    if best.fitness() > best_fitness_seen + STOP_MIN_DELTA:
+                        best_fitness_seen = best.fitness()
+                        generations_since_improvement = 0
+                    else:
+                        generations_since_improvement += 1
+
                 generation += 1
                 # STUDENT Determine stopping condition
-                stop_condition = False
+                stop_condition = (
+                    generation > STOP_MAX_GENERATIONS
+                    or generations_since_improvement >= STOP_PATIENCE
+                )
                 if stop_condition:
+                    print("Stopping: " + ("hit max generations" if generation > STOP_MAX_GENERATIONS else f"no improvement in {STOP_PATIENCE} generations"))
                     break
                 # STUDENT Also consider using FI-2POP as in the Sorenson & Pasquier paper
                 gentime = time.time()

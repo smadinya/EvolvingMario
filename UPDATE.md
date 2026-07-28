@@ -7,7 +7,7 @@ This is a work-status / handoff note. The graded rationale lives in `writeup.md`
 
 ---
 
-## TL;DR for Alcocer
+## TL;DR
 
 ```sh
 git pull origin main
